@@ -1,0 +1,197 @@
+# tcp_3flows.tcl
+# Usage: ns tcp_3flows.tcl 2Mb
+set ns [new Simulator]
+
+# argument 0 = bottleneck bandwidth string, default 2Mb
+set bwstr [expr {[llength $argv] > 0 ? [lindex $argv 0] : "2Mb"}]
+
+set trfile [open tcp.tr w]
+$ns trace-all $trfile
+set namfile [open tcp.nam w]
+$ns namtrace-all $namfile
+
+proc finish {} {
+    global ns trfile namfile
+    $ns flush-trace
+    close $trfile
+    close $namfile
+    exit 0
+}
+
+# Create nodes in order: s1,s2,s3,R1,R2,d1,d2,d3
+set s1 [$ns node]
+set s2 [$ns node]
+set s3 [$ns node]
+set r1 [$ns node]
+set r2 [$ns node]
+set d1 [$ns node]
+set d2 [$ns node]
+set d3 [$ns node]
+
+# Labels for NAM (optional)
+$ns at 0.0 "$s1 label S1"
+$ns at 0.0 "$s2 label S2"
+$ns at 0.0 "$s3 label S3"
+$ns at 0.0 "$r1 label R1"
+$ns at 0.0 "$r2 label R2"
+$ns at 0.0 "$d1 label D1"
+$ns at 0.0 "$d2 label D2"
+$ns at 0.0 "$d3 label D3"
+
+# Left links (S->R1): (bandwidth 10Mb, delay, queue 50)
+$ns duplex-link $s1 $r1 10Mb 2ms DropTail
+$ns queue-limit $s1 $r1 50
+$ns duplex-link $s2 $r1 10Mb 5ms DropTail
+$ns queue-limit $s2 $r1 50
+$ns duplex-link $s3 $r1 10Mb 2ms DropTail
+$ns queue-limit $s3 $r1 50
+
+# Bottleneck R1-R2: bw from argv, 25ms, queue 30
+$ns duplex-link $r1 $r2 $bwstr 25ms DropTail
+$ns queue-limit $r1 $r2 30
+
+# Right links (R2->D): (10Mb, delay, queue 50)
+$ns duplex-link $r2 $d1 10Mb 3ms DropTail
+$ns queue-limit $r2 $d1 50
+$ns duplex-link $r2 $d2 10Mb 15ms DropTail
+$ns queue-limit $r2 $d2 50
+$ns duplex-link $r2 $d3 10Mb 3ms DropTail
+$ns queue-limit $r2 $d3 50
+
+# Create three TCP agents and attach to sources, sinks at destinations
+set tcp0 [new Agent/TCP]
+$ns attach-agent $s1 $tcp0
+set sink0 [new Agent/TCPSink]
+$ns attach-agent $d1 $sink0
+$ns connect $tcp0 $sink0
+set ftp0 [new Application/FTP]
+$ftp0 attach-agent $tcp0
+
+set tcp1 [new Agent/TCP]
+$ns attach-agent $s2 $tcp1
+set sink1 [new Agent/TCPSink]
+$ns attach-agent $d2 $sink1
+$ns connect $tcp1 $sink1
+set ftp1 [new Application/FTP]
+$ftp1 attach-agent $tcp1
+
+set tcp2 [new Agent/TCP]
+$ns attach-agent $s3 $tcp2
+set sink2 [new Agent/TCPSink]
+$ns attach-agent $d3 $sink2
+$ns connect $tcp2 $sink2
+set ftp2 [new Application/FTP]
+$ftp2 attach-agent $tcp2
+
+# start/stop times
+$ns at 1.0 "$ftp0 start"
+$ns at 1.0 "$ftp1 start"
+$ns at 1.0 "$ftp2 start"
+$ns at 100.0 "$ftp0 stop"
+$ns at 100.0 "$ftp1 stop"
+$ns at 100.0 "$ftp2 stop"
+
+# end simulation a bit after 100s
+$ns at 101.0 "finish"
+$ns run
+
+
+# analyze_pdr.awk
+# Usage example:
+# awk -v srcs="0,1,2" -v dsts="5,6,7" -v csv=1 -f analyze_pdr.awk tcp.tr
+
+BEGIN {
+    FS = " "
+    # parse srcs and dsts lists (comma-separated)
+    split((srcs==""? "0,1,2":srcs), sarr, ",")
+    split((dsts==""? "5,6,7":dsts), darr, ",")
+    for (i=1;i<=length(sarr);i++) {
+        src[i-1] = sarr[i] + 0
+        dst[i-1] = darr[i] + 0
+        sent[i-1]=0
+        recvd[i-1]=0
+    }
+    flows = length(sarr)
+    csv = (csv==""?0:csv)
+}
+
+{
+    event=$1
+    from = $3 + 0
+    to   = $4 + 0
+    proto= $5
+    size = $6 + 0
+
+    # check each flow mapping by node numbers
+    for(i=0;i<flows;i++) {
+        if(event=="+" && from==src[i] && proto=="tcp") {
+            sent[i]++
+        }
+        if(event=="+" && from==src[i] && proto=="udp") {
+            sent[i]++
+        }
+        if(event=="r" && to==dst[i] && (proto=="tcp" || proto=="ack" || proto=="udp")) {
+            # count only data packets at destination (ignore pure acks if trace uses ack type)
+            # For tcp data, proto=="tcp" usually; for udp it's "udp"
+            recvd[i]++
+        }
+    }
+}
+
+END {
+    total_sent=0; total_recv=0
+    if(csv==1) {
+        # print header
+        printf("flow,src,dst,sent,recv,pdr\n")
+        for(i=0;i<flows;i++) {
+            pdr = (sent[i]>0)?(recvd[i]/sent[i]*100):0
+            printf("%d,%d,%d,%d,%d,%.3f\n", i+1, src[i], dst[i], sent[i], recvd[i], pdr)
+            total_sent+=sent[i]; total_recv+=recvd[i]
+        }
+        # overall
+        overall = (total_sent>0)? (total_recv/total_sent*100):0
+        printf("overall,,,%d,%d,%.3f\n", total_sent, total_recv, overall)
+    } else {
+        for(i=0;i<flows;i++) {
+            pdr = (sent[i]>0)?(recvd[i]/sent[i]*100):0
+            printf("Flow %d: src=%d dst=%d sent=%d recv=%d PDR=%.3f%%\n", i+1, src[i], dst[i], sent[i], recvd[i], pdr)
+            total_sent+=sent[i]; total_recv+=recvd[i]
+        }
+        overall = (total_sent>0)? (total_recv/total_sent*100):0
+        printf("Overall: sent=%d recv=%d PDR=%.3f%%\n", total_sent, total_recv, overall)
+    }
+}
+
+
+
+#!/bin/bash
+# run_expt4.sh
+# Sweeps bottleneck bw from 2.0 down to 1.0 in steps of -0.2
+# Produces tcp_results.csv and udp_results.csv
+
+BW_START=2.0
+BW_END=1.0
+STEP=0.2
+
+echo "bw_mbps,flow,src,dst,sent,recv,pdr" > tcp_results.csv
+echo "bw_mbps,flow,src,dst,sent,recv,pdr" > udp_results.csv
+
+bw=$BW_START
+while (( $(echo "$bw >= $BW_END - 0.0001" | bc -l) )); do
+  bwstr="${bw}Mb"
+  bwfile=$(echo $bw | sed 's/\\./_/g')
+  echo "Running TCP with bottleneck $bwstr"
+  ns tcp_3flows.tcl $bwstr
+  mv tcp.tr tcp_${bwfile}.tr
+  awk -v srcs="0,1,2" -v dsts="5,6,7" -v csv=1 -f analyzer_pdr.awk tcp_${bwfile}.tr | awk -v bw=$bw -F, 'NR>1{print bw","$0}' >> tcp_results.csv
+
+  echo "Running UDP with bottleneck $bwstr"
+  ns udp_3flows.tcl $bwstr
+  mv udp.tr udp_${bwfile}.tr
+  awk -v srcs="0,1,2" -v dsts="5,6,7" -v csv=1 -f analyzer_pdr.awk udp_${bwfile}.tr | awk -v bw=$bw -F, 'NR>1{print bw","$0}' >> udp_results.csv
+
+  bw=$(echo "$bw - $STEP" | bc)
+done
+
+echo "Done. Results: tcp_results.csv and udp_results.csv"
+

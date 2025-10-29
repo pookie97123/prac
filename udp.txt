@@ -1,0 +1,199 @@
+# udp_3flows.tcl
+# Usage: ns udp_3flows.tcl 2Mb
+set ns [new Simulator]
+set bwstr [expr {[llength $argv] > 0 ? [lindex $argv 0] : "2Mb"}]
+
+set trfile [open udp.tr w]
+$ns trace-all $trfile
+set namfile [open udp.nam w]
+$ns namtrace-all $namfile
+
+proc finish {} {
+    global ns trfile namfile
+    $ns flush-trace
+    close $trfile
+    close $namfile
+    exit 0
+}
+
+# nodes: s1,s2,s3,r1,r2,d1,d2,d3
+set s1 [$ns node]
+set s2 [$ns node]
+set s3 [$ns node]
+set r1 [$ns node]
+set r2 [$ns node]
+set d1 [$ns node]
+set d2 [$ns node]
+set d3 [$ns node]
+
+$ns at 0.0 "$s1 label S1"
+$ns at 0.0 "$s2 label S2"
+$ns at 0.0 "$s3 label S3"
+$ns at 0.0 "$r1 label R1"
+$ns at 0.0 "$r2 label R2"
+$ns at 0.0 "$d1 label D1"
+$ns at 0.0 "$d2 label D2"
+$ns at 0.0 "$d3 label D3"
+
+# Left links
+$ns duplex-link $s1 $r1 10Mb 2ms DropTail
+$ns queue-limit $s1 $r1 50
+$ns duplex-link $s2 $r1 10Mb 5ms DropTail
+$ns queue-limit $s2 $r1 50
+$ns duplex-link $s3 $r1 10Mb 2ms DropTail
+$ns queue-limit $s3 $r1 50
+
+# Bottleneck R1-R2
+$ns duplex-link $r1 $r2 $bwstr 25ms DropTail
+$ns queue-limit $r1 $r2 30
+
+# Right links
+$ns duplex-link $r2 $d1 10Mb 3ms DropTail
+$ns queue-limit $r2 $d1 50
+$ns duplex-link $r2 $d2 10Mb 15ms DropTail
+$ns queue-limit $r2 $d2 50
+$ns duplex-link $r2 $d3 10Mb 3ms DropTail
+$ns queue-limit $r2 $d3 50
+
+# UDP agents (Agent/UDP) + CBR for each
+set udp0 [new Agent/UDP]
+$ns attach-agent $s1 $udp0
+set null0 [new Agent/Null]
+$ns attach-agent $d1 $null0
+$ns connect $udp0 $null0
+set cbr0 [new Application/Traffic/CBR]
+$cbr0 set packetSize_ 1000
+$cbr0 set interval_ 0.01    ;# tune rate as required
+$cbr0 attach-agent $udp0
+
+set udp1 [new Agent/UDP]
+$ns attach-agent $s2 $udp1
+set null1 [new Agent/Null]
+$ns attach-agent $d2 $null1
+$ns connect $udp1 $null1
+set cbr1 [new Application/Traffic/CBR]
+$cbr1 set packetSize_ 1000
+$cbr1 set interval_ 0.01
+$cbr1 attach-agent $udp1
+
+set udp2 [new Agent/UDP]
+$ns attach-agent $s3 $udp2
+set null2 [new Agent/Null]
+$ns attach-agent $d3 $null2
+$ns connect $udp2 $null2
+set cbr2 [new Application/Traffic/CBR]
+$cbr2 set packetSize_ 1000
+$cbr2 set interval_ 0.01
+$cbr2 attach-agent $udp2
+
+# start/stop
+$ns at 1.0 "$cbr0 start"
+$ns at 1.0 "$cbr1 start"
+$ns at 1.0 "$cbr2 start"
+$ns at 100.0 "$cbr0 stop"
+$ns at 100.0 "$cbr1 stop"
+$ns at 100.0 "$cbr2 stop"
+
+$ns at 101.0 "finish"
+$ns run
+
+
+# analyze_pdr.awk
+# Usage example:
+# awk -v srcs="0,1,2" -v dsts="5,6,7" -v csv=1 -f analyze_pdr.awk tcp.tr
+
+BEGIN {
+    FS = " "
+    # parse srcs and dsts lists (comma-separated)
+    split((srcs==""? "0,1,2":srcs), sarr, ",")
+    split((dsts==""? "5,6,7":dsts), darr, ",")
+    for (i=1;i<=length(sarr);i++) {
+        src[i-1] = sarr[i] + 0
+        dst[i-1] = darr[i] + 0
+        sent[i-1]=0
+        recvd[i-1]=0
+    }
+    flows = length(sarr)
+    csv = (csv==""?0:csv)
+}
+
+{
+    event=$1
+    from = $3 + 0
+    to   = $4 + 0
+    proto= $5
+    size = $6 + 0
+
+    # check each flow mapping by node numbers
+    for(i=0;i<flows;i++) {
+        if(event=="+" && from==src[i] && proto=="tcp") {
+            sent[i]++
+        }
+        if(event=="+" && from==src[i] && proto=="udp") {
+            sent[i]++
+        }
+        if(event=="r" && to==dst[i] && (proto=="tcp" || proto=="ack" || proto=="udp")) {
+            # count only data packets at destination (ignore pure acks if trace uses ack type)
+            # For tcp data, proto=="tcp" usually; for udp it's "udp"
+            recvd[i]++
+        }
+    }
+}
+
+END {
+    total_sent=0; total_recv=0
+    if(csv==1) {
+        # print header
+        printf("flow,src,dst,sent,recv,pdr\n")
+        for(i=0;i<flows;i++) {
+            pdr = (sent[i]>0)?(recvd[i]/sent[i]*100):0
+            printf("%d,%d,%d,%d,%d,%.3f\n", i+1, src[i], dst[i], sent[i], recvd[i], pdr)
+            total_sent+=sent[i]; total_recv+=recvd[i]
+        }
+        # overall
+        overall = (total_sent>0)? (total_recv/total_sent*100):0
+        printf("overall,,,%d,%d,%.3f\n", total_sent, total_recv, overall)
+    } else {
+        for(i=0;i<flows;i++) {
+            pdr = (sent[i]>0)?(recvd[i]/sent[i]*100):0
+            printf("Flow %d: src=%d dst=%d sent=%d recv=%d PDR=%.3f%%\n", i+1, src[i], dst[i], sent[i], recvd[i], pdr)
+            total_sent+=sent[i]; total_recv+=recvd[i]
+        }
+        overall = (total_sent>0)? (total_recv/total_sent*100):0
+        printf("Overall: sent=%d recv=%d PDR=%.3f%%\n", total_sent, total_recv, overall)
+    }
+}
+
+
+
+#!/bin/bash
+# run_expt4.sh
+# Sweeps bottleneck bw from 2.0 down to 1.0 in steps of -0.2
+# Produces tcp_results.csv and udp_results.csv
+
+BW_START=2.0
+BW_END=1.0
+STEP=0.2
+
+echo "bw_mbps,flow,src,dst,sent,recv,pdr" > tcp_results.csv
+echo "bw_mbps,flow,src,dst,sent,recv,pdr" > udp_results.csv
+
+bw=$BW_START
+while (( $(echo "$bw >= $BW_END - 0.0001" | bc -l) )); do
+  bwstr="${bw}Mb"
+  bwfile=$(echo $bw | sed 's/\\./_/g')
+  echo "Running TCP with bottleneck $bwstr"
+  ns tcp_3flows.tcl $bwstr
+  mv tcp.tr tcp_${bwfile}.tr
+  awk -v srcs="0,1,2" -v dsts="5,6,7" -v csv=1 -f analyzer_pdr.awk tcp_${bwfile}.tr | awk -v bw=$bw -F, 'NR>1{print bw","$0}' >> tcp_results.csv
+
+  echo "Running UDP with bottleneck $bwstr"
+  ns udp_3flows.tcl $bwstr
+  mv udp.tr udp_${bwfile}.tr
+  awk -v srcs="0,1,2" -v dsts="5,6,7" -v csv=1 -f analyzer_pdr.awk udp_${bwfile}.tr | awk -v bw=$bw -F, 'NR>1{print bw","$0}' >> udp_results.csv
+
+  bw=$(echo "$bw - $STEP" | bc)
+done
+
+echo "Done. Results: tcp_results.csv and udp_results.csv"
+
