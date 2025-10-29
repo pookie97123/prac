@@ -1,0 +1,100 @@
+set ns [new Simulator]
+set trfile [open ring10.tr w]
+$ns trace-all $trfile
+set namfile [open ring10.nam w]
+$ns namtrace-all $namfile
+
+proc finish {} {
+    global ns trfile namfile
+    $ns flush-trace
+    close $trfile
+    close $namfile
+    exec nam ring10.nam &
+    exit 0
+}
+
+# create 10 nodes n0..n9
+for {set i 0} {$i < 10} {incr i} {
+    set n($i) [$ns node]
+}
+
+# ring links: each node to next, last back to first
+for {set i 0} {$i < 10} {incr i} {
+    set j [expr {($i + 1) % 10}]
+    $ns duplex-link $n($i) $n($j) 5Mb 20ms DropTail
+}
+
+# TCP source at n0 and sink at n9 (traffic traverses ring)
+set tcp [new Agent/TCP]
+$ns attach-agent $n(0) $tcp
+set sink [new Agent/TCPSink]
+$ns attach-agent $n(9) $sink
+$ns connect $tcp $sink
+
+set ftp [new Application/FTP]
+$ftp attach-agent $tcp
+
+$ns at 0.1 "$ftp start"
+$ns at 4.0 "$ftp stop"
+$ns at 5.0 "finish"
+$ns run
+
+
+
+# analyze.awk
+# Usage:
+#   awk -v src=0 -v dst=9 -v csv=0 -f analyze.awk tracefile
+# If csv==1 prints a single CSV line: topo,src,dst,sent,recv,pdr,throughput
+# If csv==0 prints human readable output.
+
+BEGIN {
+    src = (src == "" ? 0 : src)
+    dst = (dst == "" ? 9 : dst)
+    csv = (csv == "" ? 0 : csv)
+    sent_pkts = 0
+    recv_pkts = 0
+    recv_bytes = 0
+    first_send_time = -1
+    last_recv_time = -1
+    topo = (topo == "" ? "unknown" : topo)
+}
+
+{
+    event = $1
+    time = $2 + 0
+    from = $3 + 0
+    to = $4 + 0
+    proto = $5
+    size = $6 + 0
+
+    if (event == "+" && proto == "tcp" && from == src) {
+        sent_pkts++
+        if (first_send_time < 0) first_send_time = time
+    }
+
+    if (event == "r" && proto == "tcp" && to == dst) {
+        recv_pkts++
+        recv_bytes += size
+        last_recv_time = time
+    }
+}
+
+END {
+    pdr = (sent_pkts > 0) ? (recv_pkts / sent_pkts) : 0
+    sim_time = (last_recv_time > first_send_time) ? (last_recv_time - first_send_time) : 0
+    throughput_mbps = (sim_time > 0) ? (recv_bytes * 8.0 / sim_time / 1000000.0) : 0
+
+    if (csv == 1) {
+        # CSV: topology,src,dst,sent,recv,pdr,throughput
+        printf("%s,%d,%d,%d,%d,%.6f,%.6f\n", topo, src, dst, sent_pkts, recv_pkts, pdr, throughput_mbps)
+    } else {
+        printf("Topology: %s\n", topo)
+        printf("Source node: %d\n", src)
+        printf("Destination node: %d\n", dst)
+        printf("Packets Sent (enqueued at source): %d\n", sent_pkts)
+        printf("Packets Received (at dest): %d\n", recv_pkts)
+        printf("Packet Delivery Ratio (PDR): %.6f\n", pdr)
+        printf("Throughput (Mbps): %.6f\n", throughput_mbps)
+    }
+}
+

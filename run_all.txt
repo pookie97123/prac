@@ -1,0 +1,25 @@
+#!/bin/bash
+# run_all.sh
+# Make sure ns and awk are in PATH. Run from directory with the tcl/awk files.
+
+echo "topology,src,dst,sent,recv,pdr,throughput_mbps" > results.csv
+
+echo "Running bus10.tcl..."
+ns bus10.tcl
+awk -v topo=bus10 -v src=0 -v dst=9 -v csv=1 -f analyze.awk bus10.tr >> results.csv
+
+echo "Running star10.tcl..."
+ns star10.tcl
+awk -v topo=star10 -v src=0 -v dst=9 -v csv=1 -f analyze.awk star10.tr >> results.csv
+
+echo "Running ring10.tcl..."
+ns ring10.tcl
+awk -v topo=ring10 -v src=0 -v dst=9 -v csv=1 -f analyze.awk ring10.tr >> results.csv
+
+echo "Running mesh10.tcl..."
+ns mesh10.tcl
+awk -v topo=mesh10 -v src=0 -v dst=9 -v csv=1 -f analyze.awk mesh10.tr >> results.csv
+
+echo "All done. Results in results.csv"
+cat results.csv
+
