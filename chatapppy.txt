@@ -1,0 +1,88 @@
+import socket
+import threading
+
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+host = '192.168.1.74'
+port = 40674
+
+server.bind((host, port))
+server.listen(1)
+print(f"Server listening on port {port}...")
+
+client, addr = server.accept()
+print(f"Connection established with {addr}")
+
+def receive_messages():
+    while True:
+        try:
+            data = client.recv(1024)
+            if not data:
+                print("Client disconnected.")
+                break
+            print(f"\nClient: {data.decode()}")
+        except Exception as e:
+            print("Error receiving:", e)
+            break
+
+def send_messages():
+    while True:
+        try:
+            msg = input("You: ")
+            client.send(msg.encode())
+        except Exception as e:
+            print("Error sending:", e)
+            break
+
+recv_thread = threading.Thread(target=receive_messages, daemon=True)
+send_thread = threading.Thread(target=send_messages, daemon=True)
+
+recv_thread.start()
+send_thread.start()
+
+recv_thread.join()
+send_thread.join()
+
+client.close()
+server.close()
+
+
+
+import socket
+import threading
+
+def receive_messages(sock):
+    while True:
+        try:
+            message = sock.recv(1024).decode('utf-8')
+            if message:
+                print(message)
+            else:
+                break
+        except:
+            break
+
+def main():
+    host = '192.168.1.73'
+    port = 40674
+
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        client_socket.connect((host, port))
+    except Exception as e:
+        print(f"Failed to connect to server at {host}:{port} - {e}")
+        return
+
+    threading.Thread(target=receive_messages, args=(client_socket,), daemon=True).start()
+    print("Connected to chat server. Type messages and press Enter to send.")
+
+    while True:
+        msg = input()
+        if msg.lower() == 'exit':
+            break
+        client_socket.send(msg.encode('utf-8'))
+
+    client_socket.close()
+
+if __name__ == "__main__":
+    main()
+
